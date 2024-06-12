@@ -45,6 +45,20 @@ function main_options() {
 	echo -e "${purpleColour}_______________________________________________________________________${endColour}\n"
 }
 
+# Function to validate if the entered network interface is valid
+function validate_interface() {
+    local interface=$1
+    local interfaces=$(ip link show | grep -oP '\d+: \K[^:]+')
+
+    for intf in $interfaces; do
+        if [[ $intf == $interface ]]; then
+            return 0  # Interface is valid
+        fi
+    done
+
+    return 1  # Interface is not valid
+}
+
 # IP validation function
 function validate_ip() {
 	local ip=$1
@@ -106,7 +120,39 @@ function icmp_discovery() {
 
 		case $user_input in
 			1)
-				echo "Hello"
+				# Loop until a valid network interface is provided
+				while true; do
+					echo -ne "\n${yellowColour}Enter your network interface (eth0, enp0s3...): ${endColour}" 
+					read user_network_interface
+
+					# Validate the entered network interface
+					if ! validate_interface "$user_network_interface"; then
+						echo -e "\n${redColour}[!] Invalid network interface.${endColour}"
+						continue
+					fi
+
+					break
+				done
+
+				# Get the IP address and CIDR
+				user_ip=$(ip -o -4 addr show "$user_network_interface" | awk '{print $4}' | cut -d/ -f1)
+				cidr=$(ip -o -4 addr show "$user_network_interface" | awk '{print $4}' | cut -d/ -f2)
+
+				# Check if IP address is present
+				if [ -z "$user_ip" ]; then
+					echo -e "\n${redColour}[!] The interface $user_network_interface does not have an IP address assigned.${endColour}"
+					exit 1
+				fi
+
+				# Check if netmask is present
+				if [ -z "$cidr" ]; then
+					echo -e "\n${redColour}[!] The interface $user_network_interface does not have a netmask assigned.${endColour}"
+					exit 1
+				fi
+
+				# Convert CIDR to netmask
+				user_netmask=$(ipcalc "$user_ip/$cidr" | grep "Netmask" | awk '{print $2}')
+
 				break
 				;;
 			2)
@@ -121,6 +167,10 @@ function icmp_discovery() {
 						continue
 					fi
 
+					break
+				done
+
+				while true; do
 					echo -ne "\n${yellowColour}Enter a network mask: ${endColour}"
 					read user_netmask
 
@@ -132,6 +182,7 @@ function icmp_discovery() {
 
 					break
 				done
+
 				break
 				;;
 			*)
@@ -209,7 +260,7 @@ if [ "$(id -u)" == "0" ]; then
 				break
 				;;
 			2)
-				echo "Great 2"
+				echo "Working on it..."
 				break
 				;;
 			*)
