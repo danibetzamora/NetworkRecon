@@ -33,7 +33,7 @@ function banner() {
 	sleep 0.05
 	echo -e " |_| \_|\___|\__| \_/\_/ \___/|_|  |_|\_\ |_|  \_\___|\___\___/|_| |_|${endColour}"
 	sleep 0.05
-	echo -e "\n\n${yellowColour} Made by Daniel Betancor (Aka. dalnitak)${endColour}"
+	echo -e "\n\n${yellowColour} By Daniel Betancor (Aka. dalnitak)${endColour}"
 }
 
 # Initial options
@@ -108,10 +108,10 @@ function icmp_discovery() {
 	clear
 	
 	# Display menu options
-	echo -e "\n${purpleColour}_______________________________________________________________________${endColour}\n"
-	echo -e "\n${purpleColour}[${endColour}1${purpleColour}]${endColour} ${greenColour}Perform discovery on the current network${endColour}\n"
-	echo -e "${purpleColour}[${endColour}2${purpleColour}]${endColour} ${greenColour}Perform custom discovery${endColour}\n"
-	echo -e "\n${purpleColour}_______________________________________________________________________${endColour}\n"
+	echo -e "\n${greenColour}_______________________________________________________________________${endColour}\n"
+	echo -e "\n${purpleColour}[${endColour}1${purpleColour}]${endColour} ${yellowColour}Perform discovery on the current network${endColour}\n"
+	echo -e "${purpleColour}[${endColour}2${purpleColour}]${endColour} ${yellowColour}Perform custom discovery${endColour}\n"
+	echo -e "\n${greenColour}_______________________________________________________________________${endColour}\n"
 
 	while true; do
 		# Prompt user to select an option
@@ -122,7 +122,7 @@ function icmp_discovery() {
 			1)
 				# Loop until a valid network interface is provided
 				while true; do
-					echo -ne "\n${yellowColour}Enter your network interface (eth0, enp0s3...): ${endColour}" 
+					echo -ne "\n${yellowColour}Enter your network interface (eth0, ens33...): ${endColour}" 
 					read user_network_interface
 
 					# Validate the entered network interface
@@ -171,12 +171,12 @@ function icmp_discovery() {
 				done
 
 				while true; do
-					echo -ne "\n${yellowColour}Enter a network mask: ${endColour}"
+					echo -ne "\n${yellowColour}Enter a netmask: ${endColour}"
 					read user_netmask
 
-					# Validate the entered network mask
+					# Validate the entered netmask
 					if ! validate_netmask "$user_netmask"; then
-						echo -e "\n${redColour}[!] Invalid network mask.${endColour}"
+						echo -e "\n${redColour}[!] Invalid netmask.${endColour}"
 						continue
 					fi
 
@@ -215,7 +215,9 @@ function icmp_discovery() {
 
 	# Temporary file to store IP addresses
 	temp_file=$(mktemp)
-	echo -e "\"Discovered Hosts\"" > hosts_discovered.csv
+
+	# Create the csv file
+	echo -e "\"Discovered Hosts\"" > icmp_host_discovery.csv
 
 	# Iterate through IP addresses and send ICMP echo requests
 	for (( ip=network_ip_int+1; ip<broadcast_ip_int; ip++ )); do
@@ -229,20 +231,93 @@ function icmp_discovery() {
 	# Check if any hosts were discovered
 	if [ ! -s "$temp_file" ]; then
 		echo -e "\n${redColour}[!] No hosts were discovered...${endColour}\n"
+		rm "$temp_file"
 		tput cnorm
 		exit 1
 	fi
 
 	# Sort the list of discovered hosts and save them to a CSV file
-	sort -n -t . -k 1,1 -k 2,2 -k 3,3 -k 4,4 $temp_file >> hosts_discovered.csv
+	sort -n -t . -k 1,1 -k 2,2 -k 3,3 -k 4,4 $temp_file >> icmp_host_discovery.csv
 
 	# Display the list of discovered hosts 
-	echo "" && mlr --icsv --opprint --barred --key-color 231 --value-color 10 cat hosts_discovered.csv
+	echo "" && mlr --icsv --opprint --barred --key-color 231 --value-color 10 cat icmp_host_discovery.csv
 
 	# Remove the temporary file
 	rm $temp_file
 }
 
+# Function to discover hosts by ARP protocol
+function arp_discovery() {
+	clear
+
+	# Loop until a valid network interface is provided
+	while true; do
+		echo -ne "\n${yellowColour}Enter your network interface (eth0, ens33...): ${endColour}" 
+		read user_network_interface
+
+		# Validate the entered network interface
+		if ! validate_interface "$user_network_interface"; then
+			echo -e "\n${redColour}[!] Invalid network interface.${endColour}"
+			continue
+		fi
+
+		break
+	done
+
+	# Beginning of host discovery
+	clear
+	echo -e "\n${blueColour}[${endColour}*${blueColour}]${endColour} ${grayColour}Host discovery in progress...${endColour}"
+	tput civis
+
+	# Perform arp-scan
+	arp_scan=$(arp-scan -I "$user_network_interface" --localnet --ignoredups 2>/dev/null)
+
+	# Extract current IP and MAC
+	current_ip=$(echo "$arp_scan" | grep -oP 'IPv4: \K\d+\.\d+\.\d+\.\d+')
+	current_mac=$(echo "$arp_scan" | grep -oP 'MAC: \K[0-9a-fA-F:]{17}')
+
+	# Network details for the user
+	echo -e "\n${purpleColour}__________________________________________________${endColour}\n"
+	echo -e "\n${blueColour}Network Interface:${endColour} $user_network_interface"
+	echo -e "\n${blueColour}IP Address:${endColour} $current_ip"
+	echo -e "\n${blueColour}MAC Address:${endColour} $current_mac"
+	echo -e "\n${purpleColour}__________________________________________________${endColour}\n"
+
+	# Temporary file to store IP and MAC addresses
+	temp_file=$(mktemp)
+
+	# Create the csv file
+	echo "MAC,IP" > arp_host_discovery.csv
+
+	# Extract all IPs and MACs
+	all_ips_and_macs=$(echo "$arp_scan" | grep -oP '(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F:]{17})')
+
+	# Iterate over each line of IPs and MACs and append to the csv file
+	while read -r line; do
+		ip=$(echo "$line" | awk '{print $1}')
+		mac=$(echo "$line" | awk '{print $2}')
+		if [ ! -z "$ip" ] || [ ! -z "$mac" ]; then
+			echo "$mac,$ip" >> "$temp_file"
+		fi
+	done <<< "$all_ips_and_macs"
+
+	# Check if any hosts were discovered
+	if [ ! -s "$temp_file" ]; then
+		echo -e "\n${redColour}[!] No hosts were discovered...${endColour}\n"
+		rm "$temp_file"
+		tput cnorm
+		exit 1
+	fi
+
+	# Sort the temporary file by IP and append to the csv
+	sort -t, -k2,2V "$temp_file" >> arp_host_discovery.csv
+
+	# Display the list of discovered hosts 
+	echo "" && mlr --icsv --opprint --barred --key-color 231 --value-color 10 cat arp_host_discovery.csv
+
+	# Remove the temporary file
+	rm "$temp_file"
+}
 
 # Main 
 banner
@@ -260,7 +335,7 @@ if [ "$(id -u)" == "0" ]; then
 				break
 				;;
 			2)
-				echo "Working on it..."
+				arp_discovery
 				break
 				;;
 			*)
