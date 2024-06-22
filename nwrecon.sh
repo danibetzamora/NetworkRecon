@@ -42,6 +42,8 @@ function main_options() {
 	echo -e "\n${yellowColour}HOST DISCOVERY${endColour}\n"
 	echo -e "${purpleColour}[${endColour}1${purpleColour}]${endColour} ${greenColour}Discover hosts using ICMP${endColour}\n"
 	echo -e "${purpleColour}[${endColour}2${purpleColour}]${endColour} ${greenColour}Discover hosts using ARP${endColour}\n"
+	echo -e "\n\n${yellowColour}SERVICES ENUMERATION${endColour}\n"
+	echo -e "${purpleColour}[${endColour}3${purpleColour}]${endColour} ${greenColour}Enumerate services from discovered hosts${endColour}\n"
 	echo -e "${purpleColour}_______________________________________________________________________${endColour}\n"
 }
 
@@ -66,12 +68,12 @@ function validate_ip() {
         IFS='.' read -r -a octets <<< "$ip"
         for octet in "${octets[@]}"; do
             if [[ $octet -lt 0 || $octet -gt 255 ]]; then
-                return 1
+                return 1  # IP is not valid
             fi
         done
-        return 0
+        return 0  # IP is valid
     else
-        return 1
+        return 1  # IP is not valid
     fi
 }
 
@@ -79,15 +81,17 @@ function validate_ip() {
 validate_netmask() {
     local mask=$1
     if [[ $mask =~ ^(255\.255\.255\.(255|254|252|248|240|224|192|128|0)|255\.255\.(255|254|252|248|240|224|192|128|0)\.0|255\.(255|254|252|248|240|224|192|128|0)\.0\.0|(255|254|252|248|240|224|192|128|0)\.0\.0\.0)$ ]]; then
-        return 0
+        return 0  # Netmask is valid
     else
-        return 1
+        return 1  # Netmask is not valid
     fi
 }
 
 # Function to convert an IP to an integer
 function ip_to_int() {
-    local ip=$1; local int_num=0
+    local ip=$1
+	local int_num=0
+
 	for (( i=0 ; i<4 ; ++i )); do
 		((int_num+=${ip%%.*}*$((256**$((3-${i}))))))
 		ip=${ip#*.}
@@ -135,8 +139,8 @@ function icmp_discovery() {
 				done
 
 				# Get the IP address and CIDR
-				user_ip=$(ip -o -4 addr show "$user_network_interface" | awk '{print $4}' | cut -d/ -f1)
-				cidr=$(ip -o -4 addr show "$user_network_interface" | awk '{print $4}' | cut -d/ -f2)
+				user_ip=$(ip -o -4 addr show "$user_network_interface" | awk '{split($4, array, "/"); print array[1]}')
+				cidr=$(ip -o -4 addr show "$user_network_interface" | awk '{split($4, array, "/"); print array[2]}')
 
 				# Check if IP address is present
 				if [ -z "$user_ip" ]; then
@@ -201,17 +205,29 @@ function icmp_discovery() {
 	network_ip_int=$(ip_to_int $network_ip)
 	broadcast_ip_int=$(ip_to_int $broadcast_ip)
 
-	# Beginning of host discovery
-	clear
-	echo -e "\n${blueColour}[${endColour}*${blueColour}]${endColour} ${grayColour}Host discovery in progress...${endColour}"
-	tput civis
-
 	# Network details for the user
+	clear
 	echo -e "\n${purpleColour}__________________________________________________${endColour}\n"
-	echo -e "\n${blueColour}Network address:${endColour} $network_ip_prefix"
-	echo -e "\n${blueColour}Broadcast address:${endColour} $broadcast_ip"
-	echo -e "\n${blueColour}Number of hosts to discover:${endColour} $total_hosts"
-	echo -e "\n${purpleColour}__________________________________________________${endColour}\n"
+	echo -e "\n${blueColour}Network Address:${endColour} $network_ip_prefix"
+	echo -e "\n${blueColour}Broadcast Address:${endColour} $broadcast_ip"
+	echo -e "\n${blueColour}Number of Hosts:${endColour} $total_hosts"
+	echo -e "\n${purpleColour}__________________________________________________${endColour}\n\n"
+
+	# Animation function
+	tput civis
+	spin() {
+		local -a chars=('-' '\\' '|' '/')
+		while true; do
+			for char in "${chars[@]}"; do
+				echo -ne "\r${blueColour}[${endColour}${char}${blueColour}]${endColour} ${grayColour}Host discovery in progress...${endColour}"
+				sleep 0.1
+			done
+		done
+	}
+
+	# Start the animation in the background
+	spin &
+	spin_pid=$!
 
 	# Temporary file to store IP addresses
 	temp_file=$(mktemp)
@@ -224,6 +240,9 @@ function icmp_discovery() {
 		current_ip=$(int_to_ip "$ip")
 		timeout 1 bash -c "ping -c 1 $current_ip" &> /dev/null && echo "$current_ip" >> $temp_file &
 	done
+
+	# Kill the spinner
+	kill "$spin_pid" &> /dev/null && echo -ne "\r${greenColour}[${endColour}OK${greenColour}]${endColour} ${grayColour}Host discovery process completed...${endColour}\n\n"
 
 	# Wait for all ICMP requests to complete
 	wait
@@ -263,11 +282,23 @@ function arp_discovery() {
 
 		break
 	done
-
-	# Beginning of host discovery
+	
+	# Animation function
 	clear
-	echo -e "\n${blueColour}[${endColour}*${blueColour}]${endColour} ${grayColour}Host discovery in progress...${endColour}"
 	tput civis
+	spin() {
+		local -a chars=('-' '\\' '|' '/')
+		while :; do
+			for char in "${chars[@]}"; do
+				echo -ne "\r${blueColour}[${endColour}${char}${blueColour}]${endColour} ${grayColour}Host discovery in progress...${endColour}"
+				sleep 0.1
+			done
+		done
+	}
+
+	# Start the animation in the background
+	echo "" && spin &
+	spin_pid=$!
 
 	# Perform arp-scan
 	arp_scan=$(arp-scan -I "$user_network_interface" --localnet --ignoredups 2>/dev/null)
@@ -275,6 +306,9 @@ function arp_discovery() {
 	# Extract current IP and MAC
 	current_ip=$(echo "$arp_scan" | grep -oP 'IPv4: \K\d+\.\d+\.\d+\.\d+')
 	current_mac=$(echo "$arp_scan" | grep -oP 'MAC: \K[0-9a-fA-F:]{17}')
+
+	# Kill the spinner
+	kill "$spin_pid" &> /dev/null && echo -ne "\r${greenColour}[${endColour}OK${greenColour}]${endColour} ${grayColour}Host discovery process completed...${endColour}\n"
 
 	# Network details for the user
 	echo -e "\n${purpleColour}__________________________________________________${endColour}\n"
@@ -338,8 +372,12 @@ if [ "$(id -u)" == "0" ]; then
 				arp_discovery
 				break
 				;;
+			3)
+				echo "Working on it..."
+				break
+				;;
 			*)
-				echo -e "\n${redColour}[!] Invalid option. Please select an option between 1 and 2.${endColour}"
+				echo -e "\n${redColour}[!] Invalid option. Please select an option between 1 and 3.${endColour}"
 				;;
 		esac
 	done
