@@ -366,11 +366,10 @@ function icmp_discovery() {
         timeout 1 bash -c "ping -c 1 $current_ip" &>/dev/null && echo "$current_ip" >> "$temp_file" &
     done
 
-    # Wait for all pings to finish before declaring completion
-    wait
-
-    # Stop the spinner
+    # Wait for all ping processes to finish (NOT the spinner — kill it first,
+    # otherwise wait blocks forever on the infinite spin loop)
     kill "$spin_pid" &>/dev/null
+    wait
     echo -ne "\r${greenColour}[${endColour}OK${greenColour}]${endColour} ${grayColour}Host discovery completed.${endColour}\n\n"
 
     if [ ! -s "$temp_file" ]; then
