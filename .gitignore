@@ -3,5 +3,8 @@
 
 # Output files generated at runtime
 icmp_host_discovery.csv
+icmp_host_discovery.xlsx
 arp_host_discovery.csv
+arp_host_discovery.xlsx
 nmap_services.csv
+nmap_services.xlsx

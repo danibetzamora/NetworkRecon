@@ -143,6 +143,70 @@ function print_table() {
     ' "$file"
 }
 
+# --------------- XLSX Converter ---------------
+# Convert a CSV file to a formatted XLSX workbook using Python3 + openpyxl.
+# Requires: python3, python3-openpyxl (installed via ./install.sh)
+# Usage: csv_to_xlsx <input.csv> <output.xlsx>
+function csv_to_xlsx() {
+    local csv_file=$1
+    local xlsx_file=$2
+
+    if ! command -v python3 &>/dev/null; then
+        echo -e "\n${yellowColour}[*]${endColour}${grayColour} python3 not found — XLSX export skipped.${endColour}"
+        return 1
+    fi
+
+    python3 - "$csv_file" "$xlsx_file" <<'PYEOF'
+import sys, csv
+
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+except ImportError:
+    print("openpyxl not installed. Run: sudo apt install python3-openpyxl")
+    sys.exit(1)
+
+csv_path, xlsx_path = sys.argv[1], sys.argv[2]
+
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Results"
+
+header_font  = Font(bold=True, color="FFFFFF")
+header_fill  = PatternFill("solid", fgColor="1F4E79")
+header_align = Alignment(horizontal="center", vertical="center")
+data_align   = Alignment(horizontal="left",   vertical="center")
+
+with open(csv_path, newline="", encoding="utf-8") as f:
+    for row_idx, row in enumerate(csv.reader(f), start=1):
+        ws.append(row)
+        if row_idx == 1:
+            for cell in ws[row_idx]:
+                cell.font      = header_font
+                cell.fill      = header_fill
+                cell.alignment = header_align
+        else:
+            for cell in ws[row_idx]:
+                cell.alignment = data_align
+
+# Auto-fit column widths (capped at 60 chars)
+for col in ws.columns:
+    width = max((len(str(c.value)) for c in col if c.value is not None), default=0)
+    ws.column_dimensions[col[0].column_letter].width = min(width + 4, 60)
+
+# Freeze header row so it stays visible when scrolling
+ws.freeze_panes = "A2"
+
+wb.save(xlsx_path)
+PYEOF
+
+    if [ $? -eq 0 ]; then
+        echo -e "${greenColour}[+]${endColour} XLSX  saved to ${blueColour}${xlsx_file}${endColour}"
+    else
+        echo -e "${yellowColour}[*]${endColour}${grayColour} XLSX export failed. Install: sudo apt install python3-openpyxl${endColour}"
+    fi
+}
+
 # --------------- Spinner ---------------
 # Display a rotating spinner while a background task is running.
 # Intended use:  spin & ; spin_pid=$!  ...work...  kill "$spin_pid"
@@ -382,7 +446,9 @@ function icmp_discovery() {
     # Sort IPs numerically (octet by octet) and save to CSV
     sort -n -t. -k1,1 -k2,2 -k3,3 -k4,4 "$temp_file" >> icmp_host_discovery.csv
 
-    echo -e "${greenColour}[+]${endColour} Results saved to ${blueColour}icmp_host_discovery.csv${endColour}\n"
+    echo -e "${greenColour}[+]${endColour} CSV   saved to ${blueColour}icmp_host_discovery.csv${endColour}"
+    csv_to_xlsx icmp_host_discovery.csv icmp_host_discovery.xlsx
+    echo ""
     print_table icmp_host_discovery.csv
 
     rm -f "$temp_file"
@@ -465,7 +531,9 @@ function arp_discovery() {
     # Sort by IP address (version sort handles dotted-decimal correctly)
     sort -t, -k2,2V "$temp_file" >> arp_host_discovery.csv
 
-    echo -e "${greenColour}[+]${endColour} Results saved to ${blueColour}arp_host_discovery.csv${endColour}\n"
+    echo -e "${greenColour}[+]${endColour} CSV   saved to ${blueColour}arp_host_discovery.csv${endColour}"
+    csv_to_xlsx arp_host_discovery.csv arp_host_discovery.xlsx
+    echo ""
     print_table arp_host_discovery.csv
 
     rm -f "$temp_file"
@@ -473,10 +541,14 @@ function arp_discovery() {
 
 # --------------- Nmap Output Parser ---------------
 # Parse an nmap grepable output file (generated with 'nmap -oG <file>') and
-# export the port/service data to a structured CSV file.
+# export the results to a structured CSV — one row per host.
 #
-# Each row in the output corresponds to one port on one host and contains:
-#   IP, Hostname, Port, State, Protocol, Service, Version
+# Output columns:
+#   IP, Hostname, Ports, Services
+#
+# Ports is a comma-separated list of open port numbers.
+# Services is a comma-separated list of "service-version" strings (one per port).
+# If nmap did not detect a version the entry is just "service".
 #
 # Nmap grepable port-entry format (fields separated by '/'):
 #   port / state / protocol / owner / service / rpc_info / version /
@@ -507,71 +579,94 @@ function nmap_parse() {
     done
 
     local output_file="nmap_services.csv"
-    echo "IP,Hostname,Port,State,Protocol,Service,Version" > "$output_file"
+    echo "IP,Hostname,Ports,Services" > "$output_file"
 
-    local entry_count=0
+    # Associative arrays keyed by IP to group all ports/services per host.
+    # host_order preserves the order hosts first appear in the file.
+    declare -A host_hostname
+    declare -A host_ports
+    declare -A host_services
+    local -a host_order=()
 
     while IFS= read -r line; do
         # Only process Host lines that carry port data
         [[ "$line" != Host:*   ]] && continue
         [[ "$line" != *Ports:* ]] && continue
 
-        # --- Extract host fields ---
-
         local ip hostname
-        ip=$(echo "$line" | grep -oP 'Host: \K[\d.]+')
-        # Hostname is inside parentheses; may be empty → empty string
+        ip=$(      echo "$line" | grep -oP 'Host: \K[\d.]+')
         hostname=$(echo "$line" | grep -oP 'Host: [\d.]+ \(\K[^)]*')
 
-        # Isolate the port list and strip any trailing "Ignored State: …" annotation
+        # Register this host on first encounter
+        if [[ -z "${host_hostname[$ip]+_}" ]]; then
+            host_order+=("$ip")
+            host_hostname[$ip]="$hostname"
+            host_ports[$ip]=""
+            host_services[$ip]=""
+        fi
+
+        # Isolate the port list. gnmap uses tabs between sections; some builds
+        # use spaces — handle both, then strip trailing whitespace.
         local ports_section
         ports_section=$(echo "$line" \
-            | grep -oP 'Ports: \K[^\t]+' \
-            | sed 's/[[:space:]]*Ignored State:.*//')
+            | grep -oP 'Ports: \K.+' \
+            | sed 's/[[:space:]]*Ignored State:.*//' \
+            | sed 's/[[:space:]]*$//')
 
-        # --- Process each comma-separated port entry ---
-
+        # Process each comma-separated port entry
         IFS=',' read -ra port_entries <<< "$ports_section"
         for entry in "${port_entries[@]}"; do
-            # Strip leading/trailing whitespace
-            entry=$(echo "$entry" | xargs)
+            entry=$(echo "$entry" | xargs)  # trim whitespace
 
             # Nmap port-entry format: port/state/proto/owner/service/rpc/version/
-            #   field 1 → port number
-            #   field 2 → state  (open, closed, filtered)
-            #   field 3 → protocol (tcp, udp)
-            #   field 4 → owner  (usually empty)
-            #   field 5 → service name
-            #   field 6 → RPC info (usually empty)
-            #   field 7+ → version string (may contain '/' characters)
-            local port state protocol service version
-            port=$(    echo "$entry" | cut -d'/' -f1)
-            state=$(   echo "$entry" | cut -d'/' -f2)
-            protocol=$(echo "$entry" | cut -d'/' -f3)
-            service=$( echo "$entry" | cut -d'/' -f5)
-            # Grab everything from field 7 onwards and strip the trailing slash
-            version=$( echo "$entry" | cut -d'/' -f7- | sed 's|/$||')
+            local port service version svc_str
+            port=$(   echo "$entry" | cut -d'/' -f1)
+            service=$(echo "$entry" | cut -d'/' -f5)
+            # Field 7+ is the version string (may contain '/'); strip trailing '/'
+            version=$(echo "$entry" | cut -d'/' -f7- | sed 's|/$||')
 
-            # Write a fully-quoted CSV row so commas inside version strings are safe
-            printf '"%s","%s","%s","%s","%s","%s","%s"\n' \
-                "$ip" "$hostname" "$port" "$state" "$protocol" "$service" "$version" \
-                >> "$output_file"
+            # Combine into "service-version" or just "service" when no version
+            if [[ -n "$version" ]]; then
+                svc_str="${service}-${version}"
+            else
+                svc_str="$service"
+            fi
 
-            (( entry_count++ ))
+            # Append to this host's accumulated lists
+            if [[ -z "${host_ports[$ip]}" ]]; then
+                host_ports[$ip]="$port"
+                host_services[$ip]="$svc_str"
+            else
+                host_ports[$ip]="${host_ports[$ip]},${port}"
+                host_services[$ip]="${host_services[$ip]},${svc_str}"
+            fi
         done
 
     done < "$nmap_file"
 
-    if [ "$entry_count" -eq 0 ]; then
+    local host_count=${#host_order[@]}
+
+    if [ "$host_count" -eq 0 ]; then
         echo -e "\n${redColour}[!] No port data found in the file. Make sure it was generated with: nmap -oG <file> <target>${endColour}\n"
         rm -f "$output_file"
         tput cnorm
         return 1
     fi
 
-    echo -e "\n${greenColour}[+]${endColour} Parsed ${blueColour}$entry_count${endColour} port entries."
-    echo -e "${greenColour}[+]${endColour} Results saved to ${blueColour}$output_file${endColour}\n"
+    # Write one CSV row per host
+    for ip in "${host_order[@]}"; do
+        printf '"%s","%s","%s","%s"\n' \
+            "$ip" \
+            "${host_hostname[$ip]}" \
+            "${host_ports[$ip]}" \
+            "${host_services[$ip]}" \
+            >> "$output_file"
+    done
 
+    echo -e "\n${greenColour}[+]${endColour} Parsed ${blueColour}$host_count${endColour} hosts."
+    echo -e "${greenColour}[+]${endColour} CSV   saved to ${blueColour}${output_file}${endColour}"
+    csv_to_xlsx "$output_file" "nmap_services.xlsx"
+    echo ""
     print_table "$output_file"
 }
 
