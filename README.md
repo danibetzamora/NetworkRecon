@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/radar.png" alt="NetworkRecon" width="120"/>
+</p>
+
 # NetworkRecon
 
 A lightweight Bash network reconnaissance tool for host discovery and service enumeration. Designed for penetration testing, CTF challenges, and network auditing.
@@ -136,7 +140,7 @@ sudo nmap -sV -O --open -oG scan_results.gnmap 192.168.1.0/24
 ## Notes
 
 - Options 1 and 2 require root privileges (raw packet injection).
-- All results are displayed in the terminal as a formatted table (via `mlr`) and saved to CSV simultaneously.
+- All results are displayed in the terminal as an ASCII bordered table and saved to CSV simultaneously.
 - Pressing `Ctrl+C` at any point will cleanly terminate the tool and remove any temporary files.
 
 ---

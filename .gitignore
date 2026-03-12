@@ -1,0 +1,7 @@
+# Claude Code local settings (generated automatically, not part of the project)
+.claude/
+
+# Output files generated at runtime
+icmp_host_discovery.csv
+arp_host_discovery.csv
+nmap_services.csv
